@@ -133,6 +133,7 @@ class Host:
         self._is_nvr: bool = False
         self._nvr_name: str = ""
         self._nvr_serial: Optional[str] = None
+        self._nvr_uid: Optional[str] = None
         self._nvr_model: Optional[str] = None
         self._nvr_num_channels: int = 0
         self._nvr_hw_version: Optional[str] = None
@@ -149,6 +150,8 @@ class Host:
         self._stream_channels: list[int] = []
         self._channel_names: dict[int, str] = {}
         self._channel_models: dict[int, str] = {}
+        self._channel_sw_versions: dict[int, str] = {}
+        self._channel_sw_version_objects: dict[int, SoftwareVersion] = {}
         self._is_doorbell: dict[int, bool] = {}
 
         ##############################################################################
@@ -171,7 +174,7 @@ class Host:
 
         ##############################################################################
         # Saved info response-blocks
-        self._hdd_info: Optional[dict] = None
+        self._hdd_info: list[dict] = []
         self._local_link: Optional[dict] = None
         self._wifi_signal: Optional[int] = None
         self._users: Optional[dict] = None
@@ -188,9 +191,11 @@ class Host:
         self._zoom_focus_range: dict[int, dict] = {}
         self._auto_focus_settings: dict[int, dict] = {}
         self._isp_settings: dict[int, dict] = {}
+        self._image_settings: dict[int, dict] = {}
         self._ftp_settings: dict[int, dict] = {}
         self._osd_settings: dict[int, dict] = {}
         self._push_settings: dict[int, dict] = {}
+        self._webhook_settings: dict[int, dict] = {}
         self._enc_settings: dict[int, dict] = {}
         self._ptz_presets_settings: dict[int, dict] = {}
         self._ptz_guard_settings: dict[int, dict] = {}
@@ -284,6 +289,12 @@ class Host:
         return self._nvr_serial
 
     @property
+    def uid(self) -> str:
+        if self._nvr_uid is None:
+            return "Unknown"
+        return self._nvr_uid
+
+    @property
     def wifi_connection(self) -> bool:
         """LAN or Wifi"""
         if self._local_link is None:
@@ -375,7 +386,7 @@ class Host:
         return self._stream_channels
 
     @property
-    def hdd_info(self) -> Optional[dict]:
+    def hdd_info(self) -> list[dict]:
         return self._hdd_info
 
     @property
@@ -473,6 +484,20 @@ class Host:
         if channel not in self._channel_models:
             return "Unknown"
         return self._channel_models[channel]
+
+    def camera_sw_version(self, channel: int) -> str:
+        if not self.is_nvr:
+            return self.sw_version
+        if channel not in self._channel_sw_versions:
+            return "Unknown"
+        return self._channel_sw_versions[channel]
+
+    def camera_sw_version_object(self, channel: int) -> SoftwareVersion:
+        if not self.is_nvr:
+            return self.sw_version_object
+        if channel not in self._channel_sw_version_objects:
+            return SoftwareVersion(None)
+        return self._channel_sw_version_objects[channel]
 
     def is_doorbell(self, channel: int) -> bool:
         """Wether or not the camera is a doorbell"""
@@ -637,6 +662,7 @@ class Host:
             mode_values.extend([SpotlightModeEnum.onatnight])
         if self.api_version("supportLightAutoBrightness", channel) > 0:
             mode_values.extend([SpotlightModeEnum.adaptive, SpotlightModeEnum.autoadaptive])
+            mode_values.remove(SpotlightModeEnum.auto)
         return [val.name for val in mode_values]
 
     def whiteled_brightness(self, channel: int) -> Optional[int]:
@@ -665,11 +691,57 @@ class Host:
 
         return self._isp_settings[channel]["Isp"]["dayNight"]
 
+    def HDR_on(self, channel: int) -> bool | None:
+        if channel not in self._isp_settings:
+            return None
+
+        hdr = self._isp_settings[channel]["Isp"].get("hdr")
+        if hdr is None:
+            return None
+
+        return hdr > 0
+
+    def daynight_threshold(self, channel: int) -> int | None:
+        if channel not in self._isp_settings:
+            return None
+
+        return self._isp_settings[channel]["Isp"].get("dayNightThreshold")
+
     def backlight_state(self, channel: int) -> Optional[str]:
         if channel not in self._isp_settings:
             return None
 
         return self._isp_settings[channel]["Isp"]["backLight"]
+
+    def image_brightness(self, channel: int) -> int | None:
+        if channel not in self._image_settings:
+            return None
+
+        return self._image_settings[channel]["Image"].get("bright")
+
+    def image_contrast(self, channel: int) -> int | None:
+        if channel not in self._image_settings:
+            return None
+
+        return self._image_settings[channel]["Image"].get("contrast")
+
+    def image_saturation(self, channel: int) -> int | None:
+        if channel not in self._image_settings:
+            return None
+
+        return self._image_settings[channel]["Image"].get("saturation")
+
+    def image_sharpness(self, channel: int) -> int | None:
+        if channel not in self._image_settings:
+            return None
+
+        return self._image_settings[channel]["Image"].get("sharpen")
+
+    def image_hue(self, channel: int) -> int | None:
+        if channel not in self._image_settings:
+            return None
+
+        return self._image_settings[channel]["Image"].get("hue")
 
     def audio_record(self, channel: int) -> bool:
         if channel not in self._enc_settings:
@@ -897,6 +969,18 @@ class Host:
         self._token = None
         self._lease_time = None
 
+    @property
+    def capabilities(self) -> dict[int | str, list[str]]:
+        return self._capabilities
+
+    @property
+    def checked_api_versions(self) -> dict[str, int]:
+        return self._api_version
+
+    @property
+    def abilities(self) -> dict[str, Any]:
+        return self._abilities
+
     def construct_capabilities(self, warnings=True) -> None:
         """Construct the capabilities list of the NVR/camera."""
         # Host capabilities
@@ -908,6 +992,9 @@ class Host:
             self._capabilities["Host"].append("RTSP")
         if self.api_version("rtmp") > 0 and self._rtmp_port is not None:
             self._capabilities["Host"].append("RTMP")
+
+        if self._nvr_uid is not None:
+            self._capabilities["Host"].append("UID")
 
         if self.sw_version_object.date > datetime(year=2021, month=6, day=1):
             # Check if this camera publishes its inital state upon ONVIF subscription
@@ -947,8 +1034,14 @@ class Host:
             if channel in self._motion_detection_states:
                 self._capabilities[channel].append("motion_detection")
 
+            if self.api_version("supportAiAnimal", channel) and self.ai_supported(channel, PET_DETECTION_TYPE):
+                self._capabilities[channel].append("ai_animal")
+
             if channel > 0 and self.model in DUAL_LENS_DUAL_MOTION_MODELS:
                 continue
+
+            if self.api_version("supportWebhook", channel) > 0:
+                self._capabilities[channel].append("webhook")
 
             if channel in self._ftp_settings and (self.api_version("GetFtp") < 1 or "scheduleEnable" in self._ftp_settings[channel]["Ftp"]):
                 self._capabilities[channel].append("ftp")
@@ -1074,9 +1167,13 @@ class Host:
                 self._capabilities[channel].append("isp_contrast")
             if self.api_version("ispBright", channel) > 0:
                 self._capabilities[channel].append("isp_bright")
+            if self.api_version("supportIspHdr", channel) > 0 and self.HDR_on(channel) is not None:
+                self._capabilities[channel].append("HDR")
 
             if self.api_version("ispDayNight", channel, no_key_return=1) > 0 and self.daynight_state(channel) is not None:
                 self._capabilities[channel].append("dayNight")
+                if self.daynight_threshold(channel) is not None:
+                    self._capabilities[channel].append("dayNightThreshold")
 
             if self.backlight_state(channel) is not None:
                 self._capabilities[channel].append("backLight")
@@ -1132,6 +1229,8 @@ class Host:
                 ch_body = [{"cmd": "GetPowerLed", "action": 0, "param": {"channel": channel}}]
             elif cmd == "GetWhiteLed":
                 ch_body = [{"cmd": "GetWhiteLed", "action": 0, "param": {"channel": channel}}]
+            elif cmd == "GetWebHook":
+                ch_body = [{"cmd": "GetWebHook", "action": 0, "param": {"channel": channel}}]
             elif cmd == "GetPtzPreset":
                 ch_body = [{"cmd": "GetPtzPreset", "action": 0, "param": {"channel": channel}}]
             elif cmd == "GetAutoFocus":
@@ -1154,6 +1253,8 @@ class Host:
                 ch_body = [{"cmd": "GetAutoReply", "action": 0, "param": {"channel": channel}}]
             elif cmd == "GetOsd":
                 ch_body = [{"cmd": "GetOsd", "action": 0, "param": {"channel": channel}}]
+            elif cmd == "GetImage":
+                ch_body = [{"cmd": "GetImage", "action": 0, "param": {"channel": channel}}]
             elif cmd == "GetBuzzerAlarmV20":
                 ch_body = [{"cmd": "GetBuzzerAlarmV20", "action": 0, "param": {"channel": channel}}]
             elif cmd in ["GetAlarm", "GetMdAlarm"]:
@@ -1230,16 +1331,24 @@ class Host:
 
         return
 
-    async def get_states(self) -> None:
+    async def get_states(self, cmd_list: list[str] | None = None) -> None:
         body = []
         channels = []
+        if cmd_list is None:
+            cmd_list = []
+
         for channel in self._stream_channels:
-            ch_body = [{"cmd": "GetEnc", "action": 0, "param": {"channel": channel}}]
+            ch_body = []
+            if "GetEnc" in cmd_list or not cmd_list:
+                ch_body.append({"cmd": "GetEnc", "action": 0, "param": {"channel": channel}})
             body.extend(ch_body)
             channels.extend([channel] * len(ch_body))
 
         for channel in self._channels:
-            ch_body = [{"cmd": "GetIsp", "action": 0, "param": {"channel": channel}}]
+            ch_body = []
+            if "GetIsp" in cmd_list or not cmd_list:
+                ch_body.append({"cmd": "GetIsp", "action": 0, "param": {"channel": channel}})
+
             if self.api_version("GetEvents") >= 1:
                 ch_body.append({"cmd": "GetEvents", "action": 0, "param": {"channel": channel}})
             else:
@@ -1247,79 +1356,88 @@ class Host:
                 if self.ai_supported(channel):
                     ch_body.append({"cmd": "GetAiState", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "ir_lights"):
+            if self.supported(channel, "ir_lights") and ("GetIrLights" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetIrLights", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "floodLight"):
+            if self.supported(channel, "floodLight") and ("GetWhiteLed" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetWhiteLed", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "status_led"):
+            if self.supported(channel, "status_led") and ("GetPowerLed" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetPowerLed", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "zoom"):
+            if self.supported(channel, "zoom") and ("GetZoomFocus" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetZoomFocus", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "auto_focus"):
+            if self.supported(channel, "auto_focus") and ("GetAutoFocus" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetAutoFocus", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "ptz_guard"):
+            if self.supported(channel, "ptz_guard") and ("GetPtzGuard" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetPtzGuard", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "ptz_position"):
+            if self.supported(channel, "ptz_position") and ("GetPtzCurPos" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetPtzCurPos", "action": 0, "param": {"PtzCurPos": {"channel": channel}}})
 
-            if self.supported(channel, "auto_track"):
+            if self.supported(channel, "auto_track") and ("GetAiCfg" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetAiCfg", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "auto_track_limit"):
+            if self.supported(channel, "auto_track_limit") and ("GetPtzTraceSection" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetPtzTraceSection", "action": 0, "param": {"PtzTraceSection": {"channel": channel}}})
 
-            if self.supported(channel, "volume"):
+            if self.supported(channel, "volume") and ("GetAudioCfg" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetAudioCfg", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "quick_reply"):
+            if self.supported(channel, "quick_reply") and ("GetAutoReply" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetAutoReply", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "buzzer") or (self.supported(None, "buzzer") and channel == 0):
+            if (
+                self.supported(channel, "isp_hue")
+                or self.supported(channel, "isp_satruation")
+                or self.supported(channel, "isp_sharpen")
+                or self.supported(channel, "isp_contrast")
+                or self.supported(channel, "isp_bright")
+            ) and ("GetImage" in cmd_list or not cmd_list):
+                ch_body.append({"cmd": "GetImage", "action": 0, "param": {"channel": channel}})
+
+            if (self.supported(channel, "buzzer") or (self.supported(None, "buzzer") and channel == 0)) and ("GetBuzzerAlarmV20" in cmd_list or not cmd_list):
                 ch_body.append({"cmd": "GetBuzzerAlarmV20", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "email") or (self.supported(None, "email") and channel == 0):
+            if (self.supported(channel, "email") or (self.supported(None, "email") and channel == 0)) and ("GetEmail" in cmd_list or not cmd_list):
                 if self.api_version("GetEmail") >= 1:
                     ch_body.append({"cmd": "GetEmailV20", "action": 0, "param": {"channel": channel}})
                 else:
                     ch_body.append({"cmd": "GetEmail", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "push") or (self.supported(None, "push") and channel == 0):
+            if (self.supported(channel, "push") or (self.supported(None, "push") and channel == 0)) and ("GetPush" in cmd_list or not cmd_list):
                 if self.api_version("GetPush") >= 1:
                     ch_body.append({"cmd": "GetPushV20", "action": 0, "param": {"channel": channel}})
                 else:
                     ch_body.append({"cmd": "GetPush", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "ftp") or (self.supported(None, "ftp") and channel == 0):
+            if (self.supported(channel, "ftp") or (self.supported(None, "ftp") and channel == 0)) and ("GetFtp" in cmd_list or not cmd_list):
                 if self.api_version("GetFtp") >= 1:
                     ch_body.append({"cmd": "GetFtpV20", "action": 0, "param": {"channel": channel}})
                 else:
                     ch_body.append({"cmd": "GetFtp", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "recording") or (self.supported(None, "recording") and channel == 0):
+            if (self.supported(channel, "recording") or (self.supported(None, "recording") and channel == 0)) and ("GetRec" in cmd_list or not cmd_list):
                 if self.api_version("GetRec") >= 1:
                     ch_body.append({"cmd": "GetRecV20", "action": 0, "param": {"channel": channel}})
                 else:
                     ch_body.append({"cmd": "GetRec", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "siren"):
+            if self.supported(channel, "siren") and ("GetAudioAlarm" in cmd_list or not cmd_list):
                 if self.api_version("GetAudioAlarm") >= 1:
                     ch_body.append({"cmd": "GetAudioAlarmV20", "action": 0, "param": {"channel": channel}})
                 else:
                     ch_body.append({"cmd": "GetAudioAlarm", "action": 0, "param": {"channel": channel}})
 
-            if self.supported(channel, "md_sensitivity"):
+            if self.supported(channel, "md_sensitivity") and ("GetMdAlarm" in cmd_list or not cmd_list):
                 if self.api_version("GetMdAlarm") >= 1:
                     ch_body.append({"cmd": "GetMdAlarm", "action": 0, "param": {"channel": channel}})
                 else:
                     ch_body.append({"cmd": "GetAlarm", "action": 0, "param": {"Alarm": {"channel": channel, "type": "md"}}})
 
-            if self.supported(channel, "ai_sensitivity"):
+            if self.supported(channel, "ai_sensitivity") and ("GetAiAlarm" in cmd_list or not cmd_list):
                 for ai_type in self.ai_supported_types(channel):
                     ch_body.append({"cmd": "GetAiAlarm", "action": 0, "param": {"channel": channel, "ai_type": ai_type}})
 
@@ -1328,7 +1446,7 @@ class Host:
 
         # host states
         host_body = []
-        if self.supported(None, "wifi") and self.wifi_connection:
+        if self.supported(None, "wifi") and self.wifi_connection and ("GetWifiSignal" in cmd_list or not cmd_list):
             host_body.append({"cmd": "GetWifiSignal", "action": 0, "param": {}})
 
         body.extend(host_body)
@@ -1341,6 +1459,7 @@ class Host:
                 self._port,
             )
             return
+        _LOGGER.debug("Host %s:%s: get_states update cmd list: %s", self._host, self._port, cmd_list)
 
         try:
             json_data = await self.send(body, expected_response_type="json")
@@ -1358,6 +1477,7 @@ class Host:
             {"cmd": "GetDevInfo", "action": 0, "param": {}},
             {"cmd": "GetLocalLink", "action": 0, "param": {}},
             {"cmd": "GetNetPort", "action": 0, "param": {}},
+            {"cmd": "GetP2p", "action": 0, "param": {}},
             {"cmd": "GetHddInfo", "action": 0, "param": {}},
             {"cmd": "GetUser", "action": 0, "param": {}},
             {"cmd": "GetNtp", "action": 0, "param": {}},
@@ -1417,6 +1537,8 @@ class Host:
             ch_body.append({"cmd": "GetOsd", "action": 0, "param": {"channel": channel}})
             if self.supported(channel, "quick_reply"):
                 ch_body.append({"cmd": "GetAudioFileList", "action": 0, "param": {"channel": channel}})
+            if self.supported(channel, "webhook"):
+                ch_body.append({"cmd": "GetWebHook", "action": 0, "param": {"channel": channel}})
             # checking range
             if self.supported(channel, "zoom_basic"):
                 ch_body.append({"cmd": "GetZoomFocus", "action": 1, "param": {"channel": channel}})
@@ -1746,23 +1868,23 @@ class Host:
     async def check_new_firmware(self) -> Literal[False] | NewSoftwareVersion | str:
         """check for new firmware using camera API, returns False if no new firmware available."""
         new_firmware = 0
+
+        body: typings.reolink_json = [{"cmd": "GetDevInfo", "action": 0, "param": {}}]
         if self.supported(None, "update"):
-            body: typings.reolink_json = [
-                {"cmd": "CheckFirmware"},
-                {"cmd": "GetDevInfo", "action": 0, "param": {}},
-            ]
+            body.append({"cmd": "CheckFirmware"})
 
+        try:
+            json_data = await self.send(body, expected_response_type="json")
+        except InvalidContentTypeError as err:
+            raise InvalidContentTypeError(f"Check firmware: {str(err)}") from err
+        except NoDataError as err:
+            raise NoDataError(f"Host: {self._host}:{self._port}: error obtaining CheckFirmware response") from err
+
+        self.map_host_json_response(json_data)
+
+        if self.supported(None, "update"):
             try:
-                json_data = await self.send(body, expected_response_type="json")
-            except InvalidContentTypeError as err:
-                raise InvalidContentTypeError(f"Check firmware: {str(err)}") from err
-            except NoDataError as err:
-                raise NoDataError(f"Host: {self._host}:{self._port}: error obtaining CheckFirmware response") from err
-
-            self.map_host_json_response(json_data)
-
-            try:
-                new_firmware = json_data[0]["value"]["newFirmware"]
+                new_firmware = json_data[1]["value"]["newFirmware"]
             except KeyError as err:
                 raise UnexpectedDataError(f"Host {self._host}:{self._port}: received an unexpected response from check_new_firmware: {json_data}") from err
 
@@ -1788,6 +1910,11 @@ class Host:
 
     async def update_firmware(self) -> None:
         """check for new firmware."""
+        try:
+            await self.get_state(cmd="GetDevInfo")
+        except ReolinkError:
+            pass
+
         if not self.supported(None, "update"):
             raise NotSupportedError(f"update_firmware: not supported by {self.nvr_name}")
 
@@ -1918,9 +2045,9 @@ class Host:
         if stream is None:
             stream = self._stream
 
-        if self._is_nvr and stream == "main" and channel in self._rtsp_mainStream:
+        if self.api_version("rtsp") >= 3 and stream == "main" and channel in self._rtsp_mainStream:
             return self._rtsp_mainStream[channel]
-        if self._is_nvr and stream == "sub" and channel in self._rtsp_subStream:
+        if self.api_version("rtsp") >= 3 and stream == "sub" and channel in self._rtsp_subStream:
             return self._rtsp_subStream[channel]
 
         if not self._enc_settings:
@@ -1990,6 +2117,12 @@ class Host:
         # Since no request is made, make sure we are logged in.
         await self.login()
 
+        # RTMP port needs to be enabled for playback to work
+        if self._rtmp_enabled is None:
+            await self.get_state("GetNetPort")
+        if self._rtmp_enabled is False:
+            await self.set_net_port(enable_rtmp=True)
+
         if self._use_https:
             http_s = "https"
         else:
@@ -2028,12 +2161,63 @@ class Host:
             f"rtmp://{self._host}:{self._rtmp_port}/vod/{file}?channel={channel}&stream={stream_type}&{credentials}",
         )
 
-    async def download_vod(self, filename: str, wanted_filename: Optional[str] = None) -> typings.VOD_download:
+    async def download_vod(
+        self,
+        filename: str,
+        wanted_filename: Optional[str] = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        channel: Optional[str] = None,
+        stream: Optional[str] = None,
+    ) -> typings.VOD_download:
         if wanted_filename is None:
             wanted_filename = filename.replace("/", "_")
 
+        body: typings.reolink_json
+        if self.is_nvr:
+            # NVRs require a additional NvrDownload command to prepare the file for download
+            if start_time is None or end_time is None or channel is None or stream is None:
+                raise InvalidParameterError("download_vod: for a NVR 'start_time', 'end_time', 'channel' and 'stream' parameters are required")
+
+            start = datetime_to_reolink_time(start_time)
+            end = datetime_to_reolink_time(end_time)
+            body = [
+                {
+                    "cmd": "NvrDownload",
+                    "action": 1,
+                    "param": {
+                        "NvrDownload": {
+                            "channel": channel,
+                            "iLogicChannel": 0,
+                            "streamType": stream,
+                            "StartTime": start,
+                            "EndTime": end,
+                        }
+                    },
+                }
+            ]
+
+            try:
+                json_data = await self.send(body, expected_response_type="json")
+            except InvalidContentTypeError as err:
+                raise InvalidContentTypeError(f"Request NvrDownload error: {str(err)}") from err
+            except NoDataError as err:
+                raise NoDataError(f"Request NvrDownload error: {str(err)}") from err
+
+            if json_data[0].get("code") != 0:
+                raise ApiError(f"Host: {self._host}:{self._port}: Request NvrDownload: API returned error code {json_data[0].get('code', -1)}, response: {json_data}")
+
+            max_filesize = 0
+            for file in json_data[0]["value"]["fileList"]:
+                filesize = int(file["fileSize"])
+                if filesize > max_filesize:
+                    max_filesize = filesize
+                    filename = file["fileName"]
+
+            _LOGGER.debug("NVR prepared file %s", filename)
+
         param: dict[str, Any] = {"cmd": "Download", "source": filename, "output": wanted_filename}
-        body: typings.reolink_json = [{}]
+        body = [{}]
         response = await self.send(body, param, expected_response_type="application/octet-stream")
 
         if response.content_length is None:
@@ -2164,6 +2348,9 @@ class Host:
                     self._onvif_enabled = net_port.get("onvifEnable", 1) == 1
                     self._subscribe_url = f"http://{self._host}:{self._onvif_port}/onvif/event_service"
 
+                elif data["cmd"] == "GetP2p":
+                    self._nvr_uid = data["value"]["P2p"]["uid"]
+
                 elif data["cmd"] == "GetUser":
                     self._users = data["value"]["User"]
 
@@ -2215,6 +2402,10 @@ class Host:
                 if data["cmd"] == "GetChnTypeInfo":
                     self._channel_models[channel] = data["value"]["typeInfo"]
                     self._is_doorbell[channel] = "Doorbell" in self._channel_models[channel]
+                    if "firmVer" in data["value"]:
+                        self._channel_sw_versions[channel] = data["value"]["firmVer"]
+                        if self._channel_sw_versions[channel] is not None:
+                            self._channel_sw_version_objects[channel] = SoftwareVersion(self._channel_sw_versions[channel])
 
                 if data["cmd"] == "GetEvents":
                     response_channel = data["value"]["channel"]
@@ -2311,6 +2502,9 @@ class Host:
                 elif data["cmd"] == "GetPushV20":
                     self._push_settings[channel] = data["value"]
 
+                elif data["cmd"] == "GetWebHook":
+                    self._webhook_settings[channel] = data["value"]
+
                 elif data["cmd"] == "GetEnc":
                     # GetEnc returns incorrect channel for DUO camera
                     # response_channel = data["value"]["Enc"]["channel"]
@@ -2336,6 +2530,9 @@ class Host:
                 elif data["cmd"] == "GetIsp":
                     response_channel = data["value"]["Isp"]["channel"]
                     self._isp_settings[channel] = data["value"]
+
+                elif data["cmd"] == "GetImage":
+                    self._image_settings[channel] = data["value"]
 
                 elif data["cmd"] == "GetIrLights":
                     self._ir_settings[channel] = data["value"]
@@ -3306,6 +3503,34 @@ class Host:
 
         await self.send_setting(body)
 
+    async def set_HDR(self, channel: int, value: bool) -> None:
+        if channel not in self._channels:
+            raise InvalidParameterError(f"set_HDR: no camera connected to channel '{channel}'")
+        if not self.supported(channel, "HDR"):
+            raise NotSupportedError(f"set_HDR: ISP HDR on camera {self.camera_name(channel)} is not available")
+        await self.get_state(cmd="GetIsp")
+        if channel not in self._isp_settings or not self._isp_settings[channel]:
+            raise NotSupportedError(f"set_HDR: ISP on camera {self.camera_name(channel)} is not available")
+
+        body: typings.reolink_json = [{"cmd": "SetIsp", "action": 0, "param": self._isp_settings[channel]}]
+        body[0]["param"]["Isp"]["hdr"] = 2 if value else 0
+
+        await self.send_setting(body)
+
+    async def set_daynight_threshold(self, channel: int, value: int) -> None:
+        if channel not in self._channels:
+            raise InvalidParameterError(f"set_daynight_threshold: no camera connected to channel '{channel}'")
+        await self.get_state(cmd="GetIsp")
+        if channel not in self._isp_settings or not self._isp_settings[channel]:
+            raise NotSupportedError(f"set_daynight_threshold: ISP on camera {self.camera_name(channel)} is not available")
+        if value < 0 or value > 100:
+            raise InvalidParameterError(f"set_daynight_threshold: value {value} not in 0-100")
+
+        body: typings.reolink_json = [{"cmd": "SetIsp", "action": 0, "param": self._isp_settings[channel]}]
+        body[0]["param"]["Isp"]["dayNightThreshold"] = value
+
+        await self.send_setting(body)
+
     async def set_backlight(self, channel: int, value: str) -> None:
         if channel not in self._channels:
             raise InvalidParameterError(f"set_backlight: no camera connected to channel '{channel}'")
@@ -3380,7 +3605,7 @@ class Host:
         if value < 0 or value > 100:
             raise InvalidParameterError(f"set_ai_sensitivity: sensitivity {value} not in range 0...100")
         if ai_type not in self.ai_supported_types(channel):
-            raise InvalidParameterError(f"set_ai_sensitivity: ai type '{ai_type}' not supported for channel {channel}, suppored types are {self.ai_supported_types(channel)}")
+            raise InvalidParameterError(f"set_ai_sensitivity: ai type '{ai_type}' not supported for channel {channel}, supported types are {self.ai_supported_types(channel)}")
 
         body: typings.reolink_json = [{"cmd": "SetAiAlarm", "action": 0, "param": {"AiAlarm": {"channel": channel, "ai_type": ai_type, "sensitivity": value}}}]
         await self.send_setting(body)
@@ -3396,7 +3621,7 @@ class Host:
         if value < 0 or value > 8:
             raise InvalidParameterError(f"set_ai_delay: delay {value} not in range 0...8")
         if ai_type not in self.ai_supported_types(channel):
-            raise InvalidParameterError(f"set_ai_delay: ai type '{ai_type}' not supported for channel {channel}, suppored types are {self.ai_supported_types(channel)}")
+            raise InvalidParameterError(f"set_ai_delay: ai type '{ai_type}' not supported for channel {channel}, supported types are {self.ai_supported_types(channel)}")
 
         body: typings.reolink_json = [{"cmd": "SetAiAlarm", "action": 0, "param": {"AiAlarm": {"channel": channel, "ai_type": ai_type, "stay_time": value}}}]
         await self.send_setting(body)
@@ -3734,7 +3959,8 @@ class Host:
         elif self._token is not None:
             param["token"] = self._token
 
-        _LOGGER.debug("%s/%s:%s::send() HTTP Request params =\n%s\n", self.nvr_name, self._host, self._port, str(param).replace(self._password, "<password>"))
+        if _LOGGER.isEnabledFor(logging.DEBUG):
+            _LOGGER.debug("%s/%s:%s::send() HTTP Request params =\n%s\n", self.nvr_name, self._host, self._port, str(param).replace(self._password, "<password>"))
 
         if self._aiohttp_session.closed:
             self._aiohttp_session = self._get_aiohttp_session()
@@ -3752,21 +3978,27 @@ class Host:
                     response = await self._aiohttp_session.get(url=self._url, params=param, allow_redirects=False, timeout=dl_timeout)
 
                 data = ""  # Response will be a file and be large, pass the response instead of reading it here.
+                if response.content_type == "text/html":
+                    data = await response.text(encoding="utf-8")  # Error occured, read the error message
             else:
-                _LOGGER.debug("%s/%s:%s::send() HTTP Request body =\n%s\n", self.nvr_name, self._host, self._port, str(body).replace(self._password, "<password>"))
+                if _LOGGER.isEnabledFor(logging.DEBUG):
+                    _LOGGER.debug("%s/%s:%s::send() HTTP Request body =\n%s\n", self.nvr_name, self._host, self._port, str(body).replace(self._password, "<password>"))
 
                 async with self._send_mutex:
                     response = await self._aiohttp_session.post(url=self._url, json=body, params=param, allow_redirects=False)
 
                 data = await response.text(encoding="utf-8")  # returns str
 
-            _LOGGER.debug("%s/%s:%s::send() HTTP Response status = %s, content-type = (%s).", self.nvr_name, self._host, self._port, response.status, response.content_type)
-            if cur_command == "Search" and len(data) > 10000:
-                _LOGGER_DATA.debug("%s/%s:%s::send() HTTP Response (VOD search) data scrapped because it's too large.", self.nvr_name, self._host, self._port)
-            elif cur_command in ["Snap", "Download"]:
-                _LOGGER_DATA.debug("%s/%s:%s::send() HTTP Response (snapshot/download) data scrapped because it's too large.", self.nvr_name, self._host, self._port)
-            else:
-                _LOGGER_DATA.debug("%s/%s:%s::send() HTTP Response data:\n%s\n", self.nvr_name, self._host, self._port, data)
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                _LOGGER.debug(
+                    "%s/%s:%s::send() HTTP Response status = %s, content-type = (%s).", self.nvr_name, self._host, self._port, response.status, response.content_type
+                )
+                if cur_command == "Search" and len(data) > 10000:
+                    _LOGGER_DATA.debug("%s/%s:%s::send() HTTP Response (VOD search) data scrapped because it's too large.", self.nvr_name, self._host, self._port)
+                elif cur_command in ["Snap", "Download"]:
+                    _LOGGER_DATA.debug("%s/%s:%s::send() HTTP Response (snapshot/download) data scrapped because it's too large.", self.nvr_name, self._host, self._port)
+                else:
+                    _LOGGER_DATA.debug("%s/%s:%s::send() HTTP Response data:\n%s\n", self.nvr_name, self._host, self._port, data)
 
             if len(data) < 500 and response.content_type == "text/html":
                 if isinstance(data, bytes):
@@ -3790,14 +4022,6 @@ class Host:
                     await self.expire_session()
                     return await self.send(body, param, expected_response_type, retry)
 
-            expected_content_type: str = expected_response_type
-            if expected_response_type == "json":
-                expected_content_type = "text/html"
-            # Reolink typo "apolication/octet-stream" instead of "application/octet-stream"
-            if response.content_type not in [expected_content_type, "apolication/octet-stream"]:
-                response.release()
-                raise InvalidContentTypeError(f"Expected type '{expected_content_type}' but received '{response.content_type}'")
-
             if response.status == 502 and retry > 0:
                 _LOGGER.debug("Host %s:%s: 502/Bad Gateway response, trying to login again and retry the command.", self._host, self._port)
                 response.release()
@@ -3807,6 +4031,21 @@ class Host:
             if response.status >= 400 or (is_login_logout and response.status != 200):
                 response.release()
                 raise ApiError(f"API returned HTTP status ERROR code {response.status}/{response.reason}")
+
+            expected_content_type: list[str] = [expected_response_type]
+            if expected_response_type == "json":
+                expected_content_type = ["text/html"]
+            if expected_response_type == "application/octet-stream":
+                # Reolink typo "apolication/octet-stream" instead of "application/octet-stream"
+                expected_content_type = ["application/octet-stream", "apolication/octet-stream"]
+            if response.content_type not in expected_content_type:
+                response.release()
+                err_mess = f"Expected type '{expected_content_type[0]}' but received '{response.content_type}'"
+                if response.content_type == "text/html":
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8")
+                    err_mess = f"{err_mess}, response: {data}"
+                raise InvalidContentTypeError(err_mess)
 
             if expected_response_type == "json" and isinstance(data, str):
                 try:
@@ -3930,6 +4169,110 @@ class Host:
             raise ApiError(f"Request to {URL} returned error code {resp_code}, data:\n{json_data}")
 
         return json_data
+
+    ##############################################################################
+    # WEBHOOK managing
+    async def webhook_add(self, channel: int, webhook_url: str):
+        """
+        Add a new webhook, reolink web interface -> settings -> survailance -> push -> For developers.
+        Webhook will be called on motion or AI person/vehicle/animal.
+        Webhook will only be called if push is on, the corresponding type is on and the scheduale on that time is enabled.
+        """
+        if not self.supported(channel, "webhook"):
+            raise NotSupportedError(f"Webhooks not supported on camera {self.camera_name(channel)}")
+
+        await self.get_state("GetWebHook")
+
+        index = None
+        # use same index if webhook already used before
+        for webhook in self._webhook_settings[channel]["WebHook"]:
+            if webhook_url == webhook["hookUrl"]:
+                index = webhook["index"]
+                break
+
+        # if not used before find the first index not in use, if all in use default to idx 0
+        if index is None:
+            index = 0
+            for webhook in self._webhook_settings[channel]["WebHook"]:
+                if webhook["indexEnable"] == -1:
+                    index = webhook["index"]
+                    break
+
+        body: typings.reolink_json = [
+            {
+                "cmd": "SetWebHook",
+                "action": 0,
+                "param": {"WebHook": {"channel": channel, "index": index, "indexEnable": 1, "hookUrl": webhook_url, "bCustom": 0, "hookBody": ""}},
+            }
+        ]
+        await self.send_setting(body)
+
+    async def webhook_test(self, channel: int, webhook_url: str):
+        """Send a test message to a webhook"""
+        if not self.supported(channel, "webhook"):
+            raise NotSupportedError(f"Webhooks not supported on camera {self.camera_name(channel)}")
+
+        body: typings.reolink_json = [
+            {
+                "cmd": "TestWebHook",
+                "action": 0,
+                "param": {"WebHook": {"alarmChannel": channel, "type": 3, "source": "hook", "hookUrl": webhook_url, "bCustom": 0, "hookBody": ""}},
+            }
+        ]
+        try:
+            await self.send_setting(body)
+        except ApiError as err:
+            raise ApiError(f"Webhook test for url '{webhook_url}' failed: {err}") from err
+
+    async def webhook_remove(self, channel: int, webhook_url: str):
+        """Remove a webhook"""
+        if not self.supported(channel, "webhook"):
+            raise NotSupportedError(f"Webhooks not supported on camera {self.camera_name(channel)}")
+
+        await self.get_state("GetWebHook")
+
+        index = None
+        for webhook in self._webhook_settings[channel]["WebHook"]:
+            if webhook_url == webhook["hookUrl"]:
+                index = webhook["index"]
+                break
+
+        if index is None:
+            return
+
+        body: typings.reolink_json = [
+            {
+                "cmd": "SetWebHook",
+                "action": 0,
+                "param": {"WebHook": {"channel": channel, "index": index, "indexEnable": -1, "hookUrl": webhook_url, "bCustom": 0, "hookBody": ""}},
+            }
+        ]
+        await self.send_setting(body)
+
+    async def webhook_disable(self, channel: int, webhook_url: str):
+        """Disable a webhook"""
+        if not self.supported(channel, "webhook"):
+            raise NotSupportedError(f"Webhooks not supported on camera {self.camera_name(channel)}")
+
+        await self.get_state("GetWebHook")
+
+        index = None
+        for webhook in self._webhook_settings[channel]["WebHook"]:
+            if webhook_url == webhook["hookUrl"]:
+                index = webhook["index"]
+                break
+
+        if index is None:
+            return
+
+        body: typings.reolink_json = [
+            {
+                "cmd": "SetWebHook",
+                "action": 0,
+                "param": {"WebHook": {"channel": channel, "index": index, "indexEnable": 0, "hookUrl": webhook_url, "bCustom": 0, "hookBody": ""}},
+            }
+        ]
+        await self.send_setting(body)
 
     ##############################################################################
     # SUBSCRIPTION managing
